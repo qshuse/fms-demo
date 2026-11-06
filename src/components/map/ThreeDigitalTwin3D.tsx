@@ -20,6 +20,7 @@ import { RobotState } from '../../types/rmf';
 import officeModelsData from '../../data/officeModels.json';
 import airportModelsData from '../../data/airportModels.json';
 import hotelModelsData from '../../data/hotelModels.json';
+import { computeMapCoordinateSystem } from '../traffic-editor/trafficCoordinates';
 
 interface ThreeDigitalTwin3DProps {
   onSelectRobot?: (robot: RobotState | null) => void;
@@ -76,78 +77,91 @@ export const ThreeDigitalTwin3D: React.FC<ThreeDigitalTwin3DProps> = ({ onSelect
   }, [buildingMap, selectedFloor]);
 
   // Determine if map coordinates are metric or pixel-based
-  const isMetric = useMemo(() => {
-    if (!currentLevel) return false;
-    if (buildingMap.name === 'VNTT_HighTech_Campus') return false;
-    const hasFloatOrNeg = (n?: number) => n !== undefined && (n < 0 || Math.floor(n) !== n);
-    const firstVert = currentLevel.nav_graphs?.[0]?.vertices?.[0];
-    const firstWall = currentLevel.wall_segments?.[0];
-    const firstRobot = fleets.flatMap((fleet) => fleet.robots)
-      .find((robot) => robot.location.level_name === selectedFloor);
-    if (
-      hasFloatOrNeg(firstVert?.y) ||
-      hasFloatOrNeg(firstVert?.x) ||
-      hasFloatOrNeg(firstWall?.y1) ||
-      hasFloatOrNeg(firstWall?.x1) ||
-      hasFloatOrNeg(firstRobot?.location.x) ||
-      hasFloatOrNeg(firstRobot?.location.y)
-    ) {
-      return true;
-    }
-    const nameLower = (buildingMap.name || '').toLowerCase();
-    return (
-      nameLower.includes('airport') ||
-      nameLower.includes('terminal') ||
-      nameLower.includes('office') ||
-      nameLower.includes('hotel')
-    );
-  }, [buildingMap.name, currentLevel, fleets, selectedFloor]);
+  // Floorplan image overlay state
+  const [floorplanImg, setFloorplanImg] = useState<HTMLImageElement | null>(null);
 
-  // Metric centering offset & dimensions
-  const originOffset = useMemo(() => {
-    if (!currentLevel) return { cx: 0, cz: 0, minX: 0, maxX: 0, minY: 0, maxY: 0, width: 0, height: 0 };
-    let minX = 99999, maxX = -99999, minY = 99999, maxY = -99999;
-    currentLevel.wall_segments?.forEach((w) => {
-      minX = Math.min(minX, w.x1, w.x2);
-      maxX = Math.max(maxX, w.x1, w.x2);
-      minY = Math.min(minY, w.y1, w.y2);
-      maxY = Math.max(maxY, w.y1, w.y2);
-    });
-    currentLevel.nav_graphs?.forEach((g) => {
-      g.vertices.forEach((v) => {
-        minX = Math.min(minX, v.x);
-        maxX = Math.max(maxX, v.x);
-        minY = Math.min(minY, v.y);
-        maxY = Math.max(maxY, v.y);
-      });
-    });
-    fleets.flatMap((fleet) => fleet.robots)
-      .filter((robot) => robot.location.level_name === selectedFloor)
-      .forEach((robot) => {
-        minX = Math.min(minX, robot.location.x);
-        maxX = Math.max(maxX, robot.location.x);
-        minY = Math.min(minY, robot.location.y);
-        maxY = Math.max(maxY, robot.location.y);
-      });
-    if (minX === 99999) { minX = 0; maxX = 280; minY = -65; maxY = 0; }
-    return {
-      cx: (minX + maxX) / 2,
-      cz: -(minY + maxY) / 2,
-      minX, maxX, minY, maxY,
-      width: Math.max(1, maxX - minX),
-      height: Math.max(1, maxY - minY),
+  // Auto load floorplan schematic texture
+  useEffect(() => {
+    let isCancelled = false;
+    const loadImg = async () => {
+      let src: string | null | undefined = currentLevel?.images?.[0]?.data;
+      if (!src && (currentLevel?.images?.[0] as any)?.url) {
+        const u = (currentLevel?.images?.[0] as any).url;
+        const fullUrl = u.startsWith('http') ? u : `https://rmf-api.qshudev.cloud${u}`;
+        try {
+          const res = await fetch(fullUrl);
+          const blob = await res.blob();
+          src = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+        } catch {
+          src = fullUrl;
+        }
+      }
+
+      const imgName = (currentLevel?.images?.[0]?.name || '').toLowerCase();
+      const bName = (buildingMap.name || '').toLowerCase();
+      const isOfficeBuilding = bName.includes('office') || imgName.includes('office') || bName === 'building';
+
+      // If backend map is office, but data had a stale mismatched warehouse DataURL, prioritize the real office image
+      if (isOfficeBuilding && src?.startsWith('data:') && currentLevel?.nav_graphs?.some((g) => g.vertices.some((v) => v.name === 'presupplies'))) {
+        src = '/maps/office.png';
+      }
+
+      if (!src) {
+        const isAirport = bName.includes('airport') || imgName.includes('airport');
+        const isHotel = bName.includes('hotel') || imgName.includes('hotel');
+        src = isAirport
+          ? '/maps/airport_terminal.png'
+          : isHotel
+            ? `/maps/hotel_${selectedFloor || 'L1'}.png`
+            : isOfficeBuilding
+              ? '/maps/office.png'
+              : null;
+      }
+
+      if (!src || isCancelled) {
+        if (!isCancelled) setFloorplanImg(null);
+        return;
+      }
+
+      const img = new Image();
+      img.onload = () => {
+        if (!isCancelled) setFloorplanImg(img);
+      };
+      img.onerror = () => {
+        if (!isCancelled) setFloorplanImg(null);
+      };
+      img.src = src;
     };
-  }, [currentLevel, fleets, selectedFloor]);
 
-  // Coordinate mapper from RMF map to Three.js (meters, X: right, Y: up, Z: toward viewer)
-  const mapToThreePos = useCallback((x: number, y: number): { x: number; z: number } => {
-    if (isMetric) {
-      return { x: x - originOffset.cx, z: -(y - (originOffset.minY + originOffset.maxY) / 2) };
-    }
-    // Pixel to meter scale
-    const scale = 0.05;
-    return { x: (x - 600) * scale, z: (y - 450) * scale };
-  }, [isMetric, originOffset]);
+    loadImg();
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentLevel, buildingMap.name, selectedFloor]);
+
+  // Unified Coordinate System anchored to reference floorplan image
+  const coordSys = useMemo(
+    () => computeMapCoordinateSystem(buildingMap, currentLevel, floorplanImg),
+    [buildingMap, currentLevel, floorplanImg],
+  );
+
+  const isMetric = coordSys.hasImage || !coordSys.isPixelMode;
+  const mapToThreePos = coordSys.toThreePos;
+  const originOffset = useMemo(
+    () => ({
+      minX: 0,
+      maxX: coordSys.imageWidth,
+      minY: -coordSys.imageHeight,
+      maxY: 0,
+      width: coordSys.canvasWidth,
+      height: coordSys.canvasHeight,
+    }),
+    [coordSys.imageWidth, coordSys.imageHeight, coordSys.canvasWidth, coordSys.canvasHeight],
+  );
 
   // Create text sprite helper for 3D holographic labels
   const createTextSprite = (text: string, color: string = '#00F0FF', bgColor: string = 'rgba(7, 9, 14, 0.85)'): THREE.Sprite => {
@@ -333,9 +347,10 @@ export const ThreeDigitalTwin3D: React.FC<ThreeDigitalTwin3DProps> = ({ onSelect
     if (!currentLevel) return;
 
     // --- 1. Floor Ground Plane with High-Tech Grid ---
-    const mapW = originOffset.maxX - originOffset.minX;
-    const mapH = originOffset.maxY - originOffset.minY;
-    const groundSize = Math.max(120, Math.ceil(Math.max(mapW, mapH) * 1.35 / 20) * 20);
+    const dims = coordSys.get3DGroundDimensions();
+    const mapW = dims.width;
+    const mapH = dims.height;
+    const groundSize = Math.max(80, Math.ceil(Math.max(mapW, mapH) * 1.5 / 20) * 20);
 
     const floorGeo = new THREE.PlaneGeometry(groundSize, groundSize);
     const floorMat = new THREE.MeshStandardMaterial({
@@ -356,6 +371,28 @@ export const ThreeDigitalTwin3D: React.FC<ThreeDigitalTwin3DProps> = ({ onSelect
     gridMat.opacity = 0.22;
     gridMat.transparent = true;
     group.add(grid);
+
+    // Floorplan Texture Plane (Render 2D map blueprint in 3D Digital Twin)
+    const floorplanData = currentLevel.images?.[0]?.data || floorplanImg?.src;
+    if (floorplanData) {
+      const textureLoader = new THREE.TextureLoader();
+      textureLoader.load(floorplanData, (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const pW = dims.width;
+        const pH = dims.height;
+        const planeGeo = new THREE.PlaneGeometry(pW, pH);
+        const planeMat = new THREE.MeshBasicMaterial({
+          map: tex,
+          transparent: true,
+          opacity: 0.9,
+          depthWrite: false,
+        });
+        const planeMesh = new THREE.Mesh(planeGeo, planeMat);
+        planeMesh.rotation.x = -Math.PI / 2;
+        planeMesh.position.set(0, 0.005, 0);
+        group.add(planeMesh);
+      });
+    }
 
     // --- 2. 3D Architectural Extruded Walls ---
     if (showWalls && currentLevel.wall_segments) {

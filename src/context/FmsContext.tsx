@@ -10,6 +10,7 @@ import {
   Alert,
   MutexGroup,
   RobotState,
+  NavGraph,
 } from '../types/rmf';
 import { NavigationTab, FmsSettings, DispatchTaskFormData } from '../types/fms';
 import {
@@ -37,6 +38,11 @@ interface FmsContextType {
   fleets: FleetState[];
   tasks: TaskState[];
   buildingMap: BuildingMap;
+  updateNavGraph: (floorName: string, graphIndex: number, newGraph: NavGraph) => void;
+  saveBuildingMap: (newMap: BuildingMap) => void;
+  resetBuildingMap: () => void;
+  uploadAndDeployBuildingMap: (zipBlob: Blob, filename?: string) => Promise<{ uploadRes: any; freshMap: BuildingMap }>;
+  refreshBuildingMap: () => Promise<BuildingMap>;
   doorStates: Record<string, DoorState>;
   liftStates: Record<string, LiftState>;
   workcells: WorkcellItem[];
@@ -71,6 +77,98 @@ const DEFAULT_SETTINGS: FmsSettings = {
   refreshIntervalMs: 2500,
 };
 
+/**
+ * Sanitizes BuildingMap to prevent mixing old mock/office building walls & waypoints
+ * with custom imported floorplans (e.g. warehouse layout).
+ */
+export function sanitizeBuildingMap(map: BuildingMap): BuildingMap {
+  if (!map || !map.levels) return map;
+
+  const sanitizedLevels = map.levels.map((lvl) => {
+    const hasCustomImage = Boolean(
+      lvl.images?.[0]?.data?.startsWith('data:') ||
+      (lvl.images?.[0]?.name &&
+        !lvl.images[0].name.toLowerCase().includes('office') &&
+        !lvl.images[0].name.toLowerCase().includes('hotel') &&
+        !lvl.images[0].name.toLowerCase().includes('airport'))
+    );
+
+    if (hasCustomImage) {
+      // 1. Strip residual mock office walls (33 segments or matching office bounding coordinates)
+      const hasOldOfficeWalls =
+        (lvl.wall_segments && lvl.wall_segments.length > 0) &&
+        (lvl.wall_segments.length === 33 ||
+          lvl.wall_segments.some((w) => w.x1 > 10 && w.x1 < 25 && w.y1 < 0 && w.y1 > -15));
+
+      // 2. Strip residual mock office waypoints & lanes from nav_graphs
+      const sanitizedNavGraphs = (lvl.nav_graphs || []).map((g) => {
+        const isOldOfficeGraph = g.vertices.some((v) =>
+          [
+            'presupplies',
+            'patrol_d1',
+            'patrol_d2',
+            'patrol_a1',
+            'patrol_a2',
+            'patrol_b',
+            'patrol_c',
+            'tinyrobot1_charger',
+            'tinyrobot2_charger',
+            'pantry',
+            'supplies',
+            'lounge',
+            'coe',
+            'hardware_2',
+          ].includes((v.name || '').toLowerCase())
+        );
+
+        if (isOldOfficeGraph) {
+          const cleanVertices = g.vertices.filter(
+            (v) =>
+              ![
+                'presupplies',
+                'patrol_d1',
+                'patrol_d2',
+                'patrol_a1',
+                'patrol_a2',
+                'patrol_b',
+                'patrol_c',
+                'tinyrobot1_charger',
+                'tinyrobot2_charger',
+                'pantry',
+                'supplies',
+                'lounge',
+                'coe',
+                'hardware_2',
+              ].includes((v.name || '').toLowerCase())
+          );
+          return {
+            ...g,
+            vertices: cleanVertices,
+            lanes:
+              cleanVertices.length === 0
+                ? []
+                : g.lanes.filter((l) => l.entry < cleanVertices.length && l.exit < cleanVertices.length),
+          };
+        }
+        return g;
+      });
+
+      return {
+        ...lvl,
+        wall_segments: hasOldOfficeWalls ? [] : lvl.wall_segments,
+        doors: hasOldOfficeWalls ? [] : lvl.doors,
+        nav_graphs: sanitizedNavGraphs,
+      };
+    }
+    return lvl;
+  });
+
+  return {
+    ...map,
+    levels: sanitizedLevels,
+  };
+}
+
 export const FmsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -80,6 +178,7 @@ export const FmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const validTabs: NavigationTab[] = [
       'overview',
       'map',
+      'traffic-editor',
       'fleets',
       'tasks',
       'infrastructure',
@@ -107,7 +206,20 @@ export const FmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [fleets, setFleets] = useState<FleetState[]>(INITIAL_FLEETS);
   const [tasks, setTasks] = useState<TaskState[]>(INITIAL_TASKS);
-  const [buildingMap, setBuildingMap] = useState<BuildingMap>(INITIAL_BUILDING_MAP);
+  const [buildingMap, setBuildingMap] = useState<BuildingMap>(() => {
+    try {
+      const saved = localStorage.getItem('vntt_fms_custom_building_map');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.levels && parsed.levels.length > 0) {
+          return sanitizeBuildingMap(parsed);
+        }
+      }
+    } catch (e) {
+      console.warn('Could not parse cached building map', e);
+    }
+    return INITIAL_BUILDING_MAP;
+  });
   const [doorStates, setDoorStates] = useState<Record<string, DoorState>>(INITIAL_DOOR_STATES);
   const [liftStates, setLiftStates] = useState<Record<string, LiftState>>(INITIAL_LIFT_STATES);
   const [workcells, setWorkcells] = useState<WorkcellItem[]>(INITIAL_WORKCELLS);
@@ -172,13 +284,35 @@ export const FmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsBackendConnected(connected);
       });
 
+      // Revalidate building map with live backend on startup (stale-while-revalidate)
+      const fetchInitialMapOnce = async () => {
+        try {
+          const freshMap = await rmfClient.getBuildingMap();
+          if (freshMap && freshMap.levels && freshMap.levels.length > 0) {
+            const clean = sanitizeBuildingMap(freshMap);
+            setBuildingMap(clean);
+            setSelectedFloor((prev) => {
+              const exists = clean.levels.some((l) => l.name === prev);
+              return exists ? prev : clean.levels[0].name;
+            });
+            try {
+              localStorage.setItem('vntt_fms_custom_building_map', JSON.stringify(clean));
+            } catch (e) {
+              console.warn('Failed to cache building map to localStorage', e);
+            }
+          }
+        } catch (e) {
+          console.warn('Initial map fetch notice (using cache/default):', e);
+        }
+      };
+      fetchInitialMapOnce();
+
       const syncLiveBackend = async () => {
         try {
-          const [fleetResult, taskResult, mapResult, doorResult, liftResult, dispenserResult, ingestorResult] =
+          const [fleetResult, taskResult, doorResult, liftResult, dispenserResult, ingestorResult] =
             await Promise.allSettled([
             rmfClient.getFleets(),
             rmfClient.getTasks(),
-            rmfClient.getBuildingMap(),
             rmfClient.getDoors(),
             rmfClient.getLifts(),
             rmfClient.getDispensers(),
@@ -187,7 +321,6 @@ export const FmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
           const f = fleetResult.status === 'fulfilled' ? fleetResult.value : null;
           const t = taskResult.status === 'fulfilled' ? taskResult.value : null;
-          const m = mapResult.status === 'fulfilled' ? mapResult.value : null;
           const doors = doorResult.status === 'fulfilled' ? doorResult.value : null;
           const lifts = liftResult.status === 'fulfilled' ? liftResult.value : null;
           const disp = dispenserResult.status === 'fulfilled' ? dispenserResult.value : null;
@@ -198,7 +331,6 @@ export const FmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setIsBackendConnected(true);
           }
           if (t) setTasks(t);
-          if (m && m.levels.length > 0) setBuildingMap(m);
           if (disp && ing && (disp.length > 0 || ing.length > 0)) {
             setWorkcells([...disp, ...ing]);
           }
@@ -578,6 +710,81 @@ export const FmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAlerts((prev) => prev.filter((a) => a.id !== alertId));
   };
 
+  // Map & Traffic Editor actions
+  const saveBuildingMap = useCallback((newMap: BuildingMap) => {
+    const clean = sanitizeBuildingMap(newMap);
+    setBuildingMap(clean);
+    try {
+      localStorage.setItem('vntt_fms_custom_building_map', JSON.stringify(clean));
+    } catch (e) {
+      console.warn('Failed to save building map to localStorage', e);
+    }
+  }, []);
+
+  const updateNavGraph = useCallback((floorName: string, graphIndex: number, newGraph: NavGraph) => {
+    setBuildingMap((prev) => {
+      const next: BuildingMap = {
+        ...prev,
+        levels: prev.levels.map((lvl) => {
+          if (lvl.name !== floorName) return lvl;
+          const graphs = [...(lvl.nav_graphs || [])];
+          graphs[graphIndex] = newGraph;
+          return { ...lvl, nav_graphs: graphs };
+        }),
+      };
+      try {
+        localStorage.setItem('vntt_fms_custom_building_map', JSON.stringify(next));
+      } catch (e) {
+        console.warn('Failed to save updated nav graph', e);
+      }
+      return next;
+    });
+  }, []);
+
+  const resetBuildingMap = useCallback(() => {
+    localStorage.removeItem('vntt_fms_custom_building_map');
+    setBuildingMap(INITIAL_BUILDING_MAP);
+  }, []);
+
+  const refreshBuildingMap = useCallback(async () => {
+    const freshMap = await rmfClient.getBuildingMap();
+    if (freshMap && freshMap.levels && freshMap.levels.length > 0) {
+      const clean = sanitizeBuildingMap(freshMap);
+      setBuildingMap(clean);
+      setSelectedFloor((prev) => {
+        const exists = clean.levels.some((l) => l.name === prev);
+        return exists ? prev : clean.levels[0].name;
+      });
+      try {
+        localStorage.setItem('vntt_fms_custom_building_map', JSON.stringify(clean));
+      } catch (e) {
+        console.warn('Failed to cache building map to localStorage', e);
+      }
+      return clean;
+    }
+    return freshMap;
+  }, []);
+
+  const uploadAndDeployBuildingMap = useCallback(async (zipBlob: Blob, filename = 'building_map.zip') => {
+    const uploadRes = await rmfClient.uploadBuildingMap(zipBlob, filename);
+    const freshMap = await rmfClient.getBuildingMap();
+    if (freshMap && freshMap.levels && freshMap.levels.length > 0) {
+      const clean = sanitizeBuildingMap(freshMap);
+      setBuildingMap(clean);
+      setSelectedFloor((prev) => {
+        const exists = clean.levels.some((l) => l.name === prev);
+        return exists ? prev : clean.levels[0].name;
+      });
+      try {
+        localStorage.setItem('vntt_fms_custom_building_map', JSON.stringify(clean));
+      } catch (e) {
+        console.warn('Failed to cache building map to localStorage', e);
+      }
+      return { uploadRes, freshMap: clean };
+    }
+    return { uploadRes, freshMap };
+  }, []);
+
   return (
     <FmsContext.Provider
       value={{
@@ -592,6 +799,11 @@ export const FmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         fleets,
         tasks,
         buildingMap,
+        updateNavGraph,
+        saveBuildingMap,
+        resetBuildingMap,
+        uploadAndDeployBuildingMap,
+        refreshBuildingMap,
         doorStates,
         liftStates,
         workcells,

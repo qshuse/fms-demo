@@ -1,15 +1,17 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { Layers, Box, Plus, Send, X } from 'lucide-react';
+import { Layers, Box, Plus, Send, X, Route, RefreshCw } from 'lucide-react';
 import { useFms } from '../../context/FmsContext';
 import { MapControls } from './MapControls';
 import { RobotDetailDrawer } from './RobotDetailDrawer';
 import { ThreeDigitalTwin3D } from './ThreeDigitalTwin3D';
 import { MapLayerConfig } from '../../types/fms';
 import { RobotState } from '../../types/rmf';
+import { computeMapCoordinateSystem } from '../traffic-editor/trafficCoordinates';
 
 export const DigitalTwinMap: React.FC = () => {
   const {
     buildingMap,
+    refreshBuildingMap,
     fleets,
     doorStates,
     liftStates,
@@ -20,12 +22,37 @@ export const DigitalTwinMap: React.FC = () => {
     toggleDoor,
     callLift,
     dispatchNewTask,
+    setActiveTab,
   } = useFms();
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // 2D Blueprint vs 3D Three.js Digital Twin
-  const [viewMode, setViewMode] = useState<'2d' | '3d'>('3d');
+  // Sync state for GET /building-map
+  const [isRefreshingMap, setIsRefreshingMap] = useState<boolean>(false);
+
+  // Auto fetch latest building map on mount from Open-RMF Backend (GET /building-map)
+  useEffect(() => {
+    let isCancelled = false;
+    const fetchLatestMap = async () => {
+      try {
+        setIsRefreshingMap(true);
+        await refreshBuildingMap();
+      } catch (err) {
+        console.warn('Auto refresh building map on mount error:', err);
+      } finally {
+        if (!isCancelled) {
+          setIsRefreshingMap(false);
+        }
+      }
+    };
+    fetchLatestMap();
+    return () => {
+      isCancelled = true;
+    };
+  }, [refreshBuildingMap]);
+
+  // 2D Blueprint vs 3D Three.js Digital Twin (Default to 2D Map)
+  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d');
   const [showQuickTask, setShowQuickTask] = useState(false);
   const [quickDestination, setQuickDestination] = useState('');
   const [quickTarget, setQuickTarget] = useState('');
@@ -113,146 +140,94 @@ export const DigitalTwinMap: React.FC = () => {
   // Floorplan image overlay
   const [floorplanImg, setFloorplanImg] = useState<HTMLImageElement | null>(null);
 
-  // Determine if map coordinates are in real-world meters or pixels
-  const isMetric = useMemo(() => {
-    if (!currentLevel) return false;
-    if (buildingMap.name === 'VNTT_HighTech_Campus') return false;
-    const hasFloatOrNeg = (n?: number) => n !== undefined && (n < 0 || Math.floor(n) !== n);
-    const firstVert = currentLevel.nav_graphs?.[0]?.vertices?.[0];
-    const firstWall = currentLevel.wall_segments?.[0];
-    const firstRobot = allRobotsOnFloor[0];
-    if (
-      hasFloatOrNeg(firstVert?.y) ||
-      hasFloatOrNeg(firstVert?.x) ||
-      hasFloatOrNeg(firstWall?.y1) ||
-      hasFloatOrNeg(firstWall?.x1) ||
-      hasFloatOrNeg(firstRobot?.location.x) ||
-      hasFloatOrNeg(firstRobot?.location.y)
-    ) {
-      return true;
-    }
-    const nameLower = (buildingMap.name || '').toLowerCase();
-    return (
-      nameLower.includes('airport') ||
-      nameLower.includes('terminal') ||
-      nameLower.includes('office') ||
-      nameLower.includes('hotel')
-    );
-  }, [buildingMap.name, currentLevel, allRobotsOnFloor]);
+  // Unified Coordinate System anchored to reference floorplan image
+  const coordSys = useMemo(
+    () => computeMapCoordinateSystem(buildingMap, currentLevel, floorplanImg),
+    [buildingMap, currentLevel, floorplanImg],
+  );
 
-  const originOffset = useMemo(() => {
-    if (!isMetric || !currentLevel) {
-      return { minX: 0, maxX: 1000, minY: 0, maxY: 600, width: 1000, height: 600 };
-    }
-    let minX = 99999;
-    let maxX = -99999;
-    let minY = 99999;
-    let maxY = -99999;
-    currentLevel.wall_segments?.forEach((w) => {
-      minX = Math.min(minX, w.x1, w.x2);
-      maxX = Math.max(maxX, w.x1, w.x2);
-      minY = Math.min(minY, w.y1, w.y2);
-      maxY = Math.max(maxY, w.y1, w.y2);
-    });
-    currentLevel.nav_graphs?.forEach((g) => {
-      g.vertices.forEach((v) => {
-        minX = Math.min(minX, v.x);
-        maxX = Math.max(maxX, v.x);
-        minY = Math.min(minY, v.y);
-        maxY = Math.max(maxY, v.y);
-      });
-    });
-    allRobotsOnFloor.forEach((robot) => {
-      minX = Math.min(minX, robot.location.x);
-      maxX = Math.max(maxX, robot.location.x);
-      minY = Math.min(minY, robot.location.y);
-      maxY = Math.max(maxY, robot.location.y);
-    });
-    if (minX === 99999) {
-      minX = 0;
-      maxX = 35;
-      minY = -45;
-      maxY = 0;
-    }
-    return {
-      minX,
-      maxX,
-      minY,
-      maxY,
-      width: Math.max(1, maxX - minX),
-      height: Math.max(1, maxY - minY),
-    };
-  }, [isMetric, currentLevel, allRobotsOnFloor]);
-
-  // Adaptive meter scale: large airport terminal (~282m) uses 10 px/m, hotel (~31m) uses 28 px/m
-  const meterScale = useMemo(() => {
-    if (!isMetric) return 1;
-    if (originOffset.width > 150) return 10;
-    if (originOffset.width > 60) return 22;
-    if (originOffset.width > 20) return 28;
-    return 45;
-  }, [isMetric, originOffset.width]);
+  const isMetric = coordSys.hasImage || !coordSys.isPixelMode;
+  const toCanvasPos = coordSys.toCanvasPos;
 
   // Auto load floorplan schematic texture
   useEffect(() => {
-    const rawUrl = currentLevel?.images?.[0]?.data;
-    const isAirport = (buildingMap.name || '').toLowerCase().includes('airport');
-    const isHotel = (buildingMap.name || '').toLowerCase().includes('hotel');
-    const targetSrc =
-      rawUrl ||
-      (isAirport
-        ? '/maps/airport_terminal.png'
-        : isHotel
-          ? `/maps/hotel_${selectedFloor || 'L1'}.png`
-          : null);
+    let isCancelled = false;
 
-    if (!targetSrc) {
-      setFloorplanImg(null);
-      return;
-    }
-
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.src = targetSrc;
-    img.onload = () => setFloorplanImg(img);
-    img.onerror = () => {
-      if (isAirport && targetSrc !== '/maps/airport_terminal.png') {
-        const fallback = new Image();
-        fallback.src = '/maps/airport_terminal.png';
-        fallback.onload = () => setFloorplanImg(fallback);
-      } else if (isHotel && targetSrc !== `/maps/hotel_${selectedFloor || 'L1'}.png`) {
-        const fallback = new Image();
-        fallback.src = `/maps/hotel_${selectedFloor || 'L1'}.png`;
-        fallback.onload = () => setFloorplanImg(fallback);
+    const loadImg = async () => {
+      let src: string | null | undefined = currentLevel?.images?.[0]?.data;
+      if (!src && (currentLevel?.images?.[0] as any)?.url) {
+        const u = (currentLevel?.images?.[0] as any).url;
+        const fullUrl = u.startsWith('http') ? u : `https://rmf-api.qshudev.cloud${u}`;
+        try {
+          const res = await fetch(fullUrl);
+          const blob = await res.blob();
+          src = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+        } catch {
+          src = fullUrl;
+        }
       }
+
+      const imgName = (currentLevel?.images?.[0]?.name || '').toLowerCase();
+      const bName = (buildingMap.name || '').toLowerCase();
+      const isOfficeBuilding = bName.includes('office') || imgName.includes('office') || bName === 'building';
+
+      // If backend map is office, but data had a stale mismatched warehouse DataURL, prioritize the real office image
+      if (isOfficeBuilding && src?.startsWith('data:') && currentLevel?.nav_graphs?.some((g) => g.vertices.some((v) => v.name === 'presupplies'))) {
+        src = '/maps/office.png';
+      }
+
+      if (!src) {
+        const isAirport = bName.includes('airport') || imgName.includes('airport');
+        const isHotel = bName.includes('hotel') || imgName.includes('hotel');
+        src = isAirport
+          ? '/maps/airport_terminal.png'
+          : isHotel
+            ? `/maps/hotel_${selectedFloor || 'L1'}.png`
+            : isOfficeBuilding
+              ? '/maps/office.png'
+              : null;
+      }
+
+      if (!src || isCancelled) {
+        if (!isCancelled) setFloorplanImg(null);
+        return;
+      }
+
+      const img = new Image();
+      img.onload = () => {
+        if (!isCancelled) setFloorplanImg(img);
+      };
+      img.onerror = () => {
+        if (!isCancelled) setFloorplanImg(null);
+      };
+      img.src = src;
+    };
+
+    loadImg();
+    return () => {
+      isCancelled = true;
     };
   }, [currentLevel, buildingMap.name, selectedFloor]);
 
-  // Auto-fit initial view on floor switch or map resize
+  // Auto-fit view to center on floorplan and waypoints
   useEffect(() => {
-    if (originOffset.width > 150) {
-      setZoom(0.42);
-      setOffset({ x: 30, y: 130 });
-    } else if (originOffset.width > 20 && originOffset.width < 60) {
-      // Hotel is ~31m wide
-      setZoom(0.85);
-      setOffset({ x: 140, y: 50 });
-    } else {
-      setZoom(1.0);
-      setOffset({ x: 40, y: 30 });
-    }
-  }, [selectedFloor, originOffset.width]);
-
-  const toCanvasPos = useCallback(
-    (x: number, y: number) => {
-      if (!isMetric) return { x, y };
-      return {
-        x: (x - originOffset.minX) * meterScale + 80,
-        y: (-y + originOffset.maxY) * meterScale + 80,
-      };
-    },
-    [isMetric, originOffset, meterScale],
-  );
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const w = canvas.clientWidth || 900;
+    const h = canvas.clientHeight || 650;
+    const totalW = coordSys.canvasWidth;
+    const totalH = coordSys.canvasHeight;
+    const fitZoom = Math.min(1.5, Math.max(0.18, Math.min((w - 40) / totalW, (h - 40) / totalH)));
+    setZoom(fitZoom);
+    setOffset({
+      x: (w - totalW * fitZoom) / 2,
+      y: (h - totalH * fitZoom) / 2,
+    });
+  }, [selectedFloor, coordSys.canvasWidth, coordSys.canvasHeight, floorplanImg]);
 
   // Auto follow robot if enabled
   useEffect(() => {
@@ -321,17 +296,20 @@ export const DigitalTwinMap: React.FC = () => {
     ctx.scale(zoom, zoom);
 
     if (currentLevel) {
-      // 0. Draw Floorplan Blueprint Image (Underlay)
-      if (floorplanImg && currentLevel.images?.[0]) {
-        const meta = currentLevel.images[0];
-        const imgScale = meta.scale || 0.08212;
-        const imgW = floorplanImg.naturalWidth * imgScale * meterScale;
-        const imgH = floorplanImg.naturalHeight * imgScale * meterScale;
-        const originPos = toCanvasPos(meta.x_offset || 0, meta.y_offset || 0);
+      const isCustomFloorplan = Boolean(
+        currentLevel.images?.[0]?.data?.startsWith('data:') ||
+        (currentLevel.images?.[0]?.name &&
+          !currentLevel.images[0].name.toLowerCase().includes('office') &&
+          !currentLevel.images[0].name.toLowerCase().includes('hotel') &&
+          !currentLevel.images[0].name.toLowerCase().includes('airport'))
+      );
 
+      // 0. Draw Floorplan Blueprint Image (Underlay)
+      if (floorplanImg) {
+        const originPos = toCanvasPos(0, 0);
         ctx.save();
-        ctx.globalAlpha = 0.28;
-        ctx.drawImage(floorplanImg, originPos.x, originPos.y, imgW, imgH);
+        ctx.globalAlpha = 0.9;
+        ctx.drawImage(floorplanImg, originPos.x, originPos.y, floorplanImg.naturalWidth, floorplanImg.naturalHeight);
         ctx.restore();
       }
 
@@ -350,6 +328,13 @@ export const DigitalTwinMap: React.FC = () => {
             const rawV1 = graph.vertices[lane.entry];
             const rawV2 = graph.vertices[lane.exit];
             if (!rawV1 || !rawV2) return;
+
+            // Filter out residual mock office lanes when using a custom floorplan
+            if (isCustomFloorplan) {
+              const isV1Office = ['presupplies', 'patrol_d1', 'patrol_d2', 'patrol_a1', 'patrol_a2', 'patrol_b', 'patrol_c', 'tinyrobot1_charger', 'tinyrobot2_charger', 'pantry', 'supplies', 'lounge', 'coe', 'hardware_2'].includes((rawV1.name || '').toLowerCase());
+              const isV2Office = ['presupplies', 'patrol_d1', 'patrol_d2', 'patrol_a1', 'patrol_a2', 'patrol_b', 'patrol_c', 'tinyrobot1_charger', 'tinyrobot2_charger', 'pantry', 'supplies', 'lounge', 'coe', 'hardware_2'].includes((rawV2.name || '').toLowerCase());
+              if (isV1Office || isV2Office) return;
+            }
 
             const v1 = toCanvasPos(rawV1.x, rawV1.y);
             const v2 = toCanvasPos(rawV2.x, rawV2.y);
@@ -398,7 +383,12 @@ export const DigitalTwinMap: React.FC = () => {
       }
 
       // 3. Draw Walls
-      if (layers.showWalls && currentLevel.wall_segments) {
+      const isResidualOfficeWalls =
+        isCustomFloorplan &&
+        ((currentLevel.wall_segments?.length === 33) ||
+          Boolean(currentLevel.wall_segments?.some((w) => w.x1 > 10 && w.x1 < 25 && w.y1 < 0)));
+
+      if (layers.showWalls && currentLevel.wall_segments && !isResidualOfficeWalls) {
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
         ctx.lineWidth = 6;
         ctx.lineCap = 'round';
@@ -428,6 +418,29 @@ export const DigitalTwinMap: React.FC = () => {
       if (layers.showWaypoints && currentLevel.nav_graphs) {
         currentLevel.nav_graphs.forEach((graph) => {
           graph.vertices.forEach((v) => {
+            // Filter out residual mock office waypoints when using a custom floorplan
+            if (
+              isCustomFloorplan &&
+              [
+                'presupplies',
+                'patrol_d1',
+                'patrol_d2',
+                'patrol_a1',
+                'patrol_a2',
+                'patrol_b',
+                'patrol_c',
+                'tinyrobot1_charger',
+                'tinyrobot2_charger',
+                'pantry',
+                'supplies',
+                'lounge',
+                'coe',
+                'hardware_2',
+              ].includes((v.name || '').toLowerCase())
+            ) {
+              return;
+            }
+
             const p = toCanvasPos(v.x, v.y);
             ctx.beginPath();
             if (v.is_charger) {
@@ -490,8 +503,8 @@ export const DigitalTwinMap: React.FC = () => {
           const ry = lift.ref_y !== undefined ? lift.ref_y : 280;
           const p = toCanvasPos(rx, ry);
           const state = liftStates[lift.name];
-          const liftW = isMetric ? (lift.width || 2.7) * meterScale : 40;
-          const liftH = isMetric ? (lift.depth || 2.7) * meterScale : 40;
+          const liftW = isMetric ? (lift.width || 2.7) * 20 : 40;
+          const liftH = isMetric ? (lift.depth || 2.7) * 20 : 40;
 
           ctx.fillStyle = 'rgba(139, 92, 246, 0.25)';
           ctx.strokeStyle = '#8B5CF6';
@@ -777,6 +790,61 @@ export const DigitalTwinMap: React.FC = () => {
         >
           <Box size={14} />
           <span>3D Digital Twin</span>
+        </button>
+        <div style={{ width: '1px', height: '20px', background: 'var(--border-subtle)', margin: '0 2px' }} />
+        <button
+          onClick={async () => {
+            if (isRefreshingMap) return;
+            setIsRefreshingMap(true);
+            try {
+              localStorage.removeItem('vntt_fms_custom_building_map');
+              await refreshBuildingMap();
+            } catch (err) {
+              console.error('Failed to sync building map from server:', err);
+            } finally {
+              setIsRefreshingMap(false);
+            }
+          }}
+          disabled={isRefreshingMap}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '6px 12px',
+            borderRadius: '7px',
+            fontSize: '12px',
+            fontWeight: 600,
+            border: '1px solid var(--border-subtle)',
+            cursor: isRefreshingMap ? 'wait' : 'pointer',
+            background: isRefreshingMap ? 'rgba(0, 240, 255, 0.15)' : 'transparent',
+            color: isRefreshingMap ? 'var(--accent-cyan)' : 'var(--text-secondary)',
+            transition: 'all 0.2s ease',
+          }}
+          title="Đồng bộ bản đồ mới nhất từ Open-RMF Backend (GET /building-map)"
+        >
+          <RefreshCw size={14} className={isRefreshingMap ? 'spin' : ''} />
+          <span>{isRefreshingMap ? 'Syncing...' : 'Sync Map'}</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('traffic-editor')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '6px 12px',
+            borderRadius: '7px',
+            fontSize: '12px',
+            fontWeight: 600,
+            border: '1px solid rgba(0, 240, 255, 0.3)',
+            cursor: 'pointer',
+            background: 'rgba(0, 240, 255, 0.08)',
+            color: 'var(--accent-cyan)',
+            transition: 'all 0.2s ease',
+          }}
+          title="Open RMF Traffic Graph Editor (Waypoints & Lanes)"
+        >
+          <Route size={14} />
+          <span>Edit Traffic</span>
         </button>
       </div>
 

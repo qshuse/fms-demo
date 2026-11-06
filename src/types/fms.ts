@@ -3,6 +3,7 @@
 export type NavigationTab =
   | 'overview'
   | 'map'
+  | 'traffic-editor'
   | 'fleets'
   | 'tasks'
   | 'infrastructure'

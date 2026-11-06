@@ -35,7 +35,7 @@ export class RmfClient {
       baseURL: apiServerUrl,
       timeout: 10000,
       headers: {
-        'Content-Type': 'application/json',
+        Accept: 'application/json',
       },
     });
   }
@@ -124,7 +124,8 @@ export class RmfClient {
     const raw = res.data?.data ?? res.data?.value ?? res.data;
     if (!raw) return { name: 'Building', levels: [], lifts: [] };
 
-    const normalizedLevels = (raw.levels || []).map((level: any) => {
+    const normalizedLevels = await Promise.all(
+      (raw.levels || []).map(async (level: any) => {
       // 1. Normalize Wall Segments from wall_graph
       let wallSegments: { x1: number; y1: number; x2: number; y2: number }[] = [];
       if (level.wall_graph?.vertices && level.wall_graph?.edges) {
@@ -208,28 +209,68 @@ export class RmfClient {
         };
       });
 
+      // 4. Normalize Images (Download as Base64 DataURL to prevent CORS/OPTIONS 405 errors)
+      const normalizedImages = await Promise.all(
+        (level.images || []).map(async (image: any) => {
+          let data = image.data;
+          if (!data && image.url) {
+            const fullUrl = image.url.startsWith('http')
+              ? image.url
+              : new URL(image.url, this.apiServerUrl).toString();
+            try {
+              const imgRes = await fetch(fullUrl, { headers: { Accept: 'image/*' } });
+              if (imgRes.ok) {
+                const blob = await imgRes.blob();
+                data = await new Promise<string>((resolve) => {
+                  const reader = new FileReader();
+                  reader.onloadend = () => resolve(reader.result as string);
+                  reader.readAsDataURL(blob);
+                });
+              } else {
+                data = fullUrl;
+              }
+            } catch (e) {
+              console.warn(`Could not load blob for ${image.url}:`, e);
+              data = fullUrl;
+            }
+          }
+          return {
+            name: image.name || `level_${level.index ?? level.name}`,
+            x_offset: image.x_offset ?? 0,
+            y_offset: image.y_offset ?? 0,
+            yaw: image.yaw ?? 0,
+            scale: image.scale ?? 1,
+            data,
+          };
+        }),
+      );
+
       return {
         name: level.name,
         elevation: level.elevation || 0,
         wall_segments: wallSegments,
         doors: normalizedDoors,
         nav_graphs: normalizedNavGraphs,
-        images: (level.images || []).map((image: any) => ({
-          name: image.name || `level_${level.index ?? level.name}`,
-          x_offset: image.x_offset ?? 0,
-          y_offset: image.y_offset ?? 0,
-          yaw: image.yaw ?? 0,
-          scale: image.scale ?? 1,
-          data: image.data || (image.url ? new URL(image.url, this.apiServerUrl).toString() : undefined),
-        })),
+        images: normalizedImages,
       };
-    });
+    }));
 
     return {
       name: raw.name || 'Building',
       levels: normalizedLevels,
       lifts: raw.lifts || [],
     };
+  }
+
+  public async uploadBuildingMap(zipFileOrBlob: Blob | File, filename = 'building_map.zip'): Promise<any> {
+    const formData = new FormData();
+    formData.append('file', zipFileOrBlob, filename);
+    const res = await this.http.post<any>('/building-map', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return res.data;
   }
 
   public async getFleets(): Promise<FleetState[]> {

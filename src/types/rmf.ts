@@ -117,6 +117,7 @@ export interface MapVertex {
   is_parking_spot?: boolean;
   is_charger?: boolean;
   is_holding_point?: boolean;
+  yaw?: number;
 }
 
 export interface MapLane {
@@ -125,6 +126,9 @@ export interface MapLane {
   exit: number;  // vertex index
   two_way: boolean;
   orientation_constraint?: number;
+  is_closed?: boolean;
+  speed_limit?: number;
+  mutex_group?: string;
 }
 
 export interface NavGraph {

@@ -6,6 +6,7 @@ import { Sidebar } from './components/layout/Sidebar';
 import { EStopModal } from './components/layout/EStopModal';
 import { DashboardView } from './components/dashboard/DashboardView';
 import { DigitalTwinMap } from './components/map/DigitalTwinMap';
+import { TrafficEditorView } from './components/traffic-editor/TrafficEditorView';
 import { FleetsView } from './components/fleets/FleetsView';
 import { TasksView } from './components/tasks/TasksView';
 import { InfrastructureView } from './components/infrastructure/InfrastructureView';
@@ -54,6 +55,14 @@ const MainLayout: React.FC = () => {
             element={
               <div style={{ flex: 1, height: '100%', position: 'relative', overflow: 'hidden' }}>
                 <DigitalTwinMap />
+              </div>
+            }
+          />
+          <Route
+            path="/traffic-editor"
+            element={
+              <div style={{ flex: 1, height: '100%', position: 'relative', overflow: 'hidden' }}>
+                <TrafficEditorView />
               </div>
             }
           />

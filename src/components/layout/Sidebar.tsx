@@ -2,6 +2,7 @@ import React from 'react';
 import {
   LayoutDashboard,
   Map,
+  Route,
   Bot,
   ListTodo,
   Building2,
@@ -31,6 +32,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggleCollapse })
       id: 'map',
       label: 'Digital Twin Map',
       icon: <Map size={20} />,
+    },
+    {
+      id: 'traffic-editor',
+      label: 'Traffic Editor',
+      icon: <Route size={20} />,
     },
     {
       id: 'fleets',
