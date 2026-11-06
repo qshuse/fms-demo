@@ -2,10 +2,12 @@ import React, { useState } from 'react';
 import { Bot, Cpu, Plus, Radio, Layers, Activity } from 'lucide-react';
 import { useFms } from '../../context/FmsContext';
 import { RobotCard } from './RobotCard';
+import { FleetManagement } from './FleetManagement';
 
 export const FleetsView: React.FC = () => {
   const { fleets, setActiveTab } = useFms();
   const [selectedFleetFilter, setSelectedFleetFilter] = useState<string>('all');
+  const [showManagement, setShowManagement] = useState<boolean>(false);
 
   const filteredFleets =
     selectedFleetFilter === 'all'
@@ -34,6 +36,13 @@ export const FleetsView: React.FC = () => {
             Real-time RMF Robot Adapters, Battery States & Live Poses
           </span>
         </div>
+
+        <button
+          className={showManagement ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'}
+          onClick={() => setShowManagement((current) => !current)}
+        >
+          <Plus size={13} /> {showManagement ? 'Hide management' : 'Manage fleets & robots'}
+        </button>
 
         {/* Fleet Tab Filters */}
         <div
@@ -88,6 +97,8 @@ export const FleetsView: React.FC = () => {
           })}
         </div>
       </div>
+
+      {showManagement && <FleetManagement />}
 
       {/* Fleets Sections */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>

@@ -85,12 +85,13 @@ export function sanitizeBuildingMap(map: BuildingMap): BuildingMap {
   if (!map || !map.levels) return map;
 
   const sanitizedLevels = map.levels.map((lvl) => {
+    // Decide by image name only: rmf-client turns every image into a data URL,
+    // so checking for 'data:' would flag the real office map as custom and strip its waypoints.
     const hasCustomImage = Boolean(
-      lvl.images?.[0]?.data?.startsWith('data:') ||
-      (lvl.images?.[0]?.name &&
+      lvl.images?.[0]?.name &&
         !lvl.images[0].name.toLowerCase().includes('office') &&
         !lvl.images[0].name.toLowerCase().includes('hotel') &&
-        !lvl.images[0].name.toLowerCase().includes('airport'))
+        !lvl.images[0].name.toLowerCase().includes('airport')
     );
 
     if (hasCustomImage) {
@@ -122,32 +123,42 @@ export function sanitizeBuildingMap(map: BuildingMap): BuildingMap {
         );
 
         if (isOldOfficeGraph) {
-          const cleanVertices = g.vertices.filter(
-            (v) =>
-              ![
-                'presupplies',
-                'patrol_d1',
-                'patrol_d2',
-                'patrol_a1',
-                'patrol_a2',
-                'patrol_b',
-                'patrol_c',
-                'tinyrobot1_charger',
-                'tinyrobot2_charger',
-                'pantry',
-                'supplies',
-                'lounge',
-                'coe',
-                'hardware_2',
-              ].includes((v.name || '').toLowerCase())
-          );
+          const newIndexOf = new Map<number, number>();
+          const cleanVertices = g.vertices
+            .filter(
+              (v) =>
+                ![
+                  'presupplies',
+                  'patrol_d1',
+                  'patrol_d2',
+                  'patrol_a1',
+                  'patrol_a2',
+                  'patrol_b',
+                  'patrol_c',
+                  'tinyrobot1_charger',
+                  'tinyrobot2_charger',
+                  'pantry',
+                  'supplies',
+                  'lounge',
+                  'coe',
+                  'hardware_2',
+                ].includes((v.name || '').toLowerCase())
+            )
+            .map((v, newIndex) => {
+              newIndexOf.set(v.index, newIndex);
+              return { ...v, index: newIndex };
+            });
           return {
             ...g,
             vertices: cleanVertices,
-            lanes:
-              cleanVertices.length === 0
-                ? []
-                : g.lanes.filter((l) => l.entry < cleanVertices.length && l.exit < cleanVertices.length),
+            lanes: g.lanes
+              .filter((l) => newIndexOf.has(l.entry) && newIndexOf.has(l.exit))
+              .map((l, laneIndex) => ({
+                ...l,
+                index: laneIndex,
+                entry: newIndexOf.get(l.entry)!,
+                exit: newIndexOf.get(l.exit)!,
+              })),
           };
         }
         return g;

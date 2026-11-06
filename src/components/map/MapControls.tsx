@@ -230,6 +230,7 @@ export const MapControls: React.FC<MapControlsProps> = ({
                   ['showWalls', 'Walls'],
                   ['showLabels', 'Labels'],
                   ['showGrid', 'Grid'],
+                  ['darkFloorplan', 'Dark Floorplan'],
                 ] as const
               ).map(([key, label]) => (
                 <label

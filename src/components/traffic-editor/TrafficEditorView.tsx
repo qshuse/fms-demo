@@ -48,6 +48,7 @@ import {
   extractBuildingMapZip,
 } from './trafficYamlUtils';
 import { computeMapCoordinateSystem } from './trafficCoordinates';
+import { getDarkFloorplan } from '../map/floorplanTheme';
 import { rmfClient } from '../../services/rmf-client';
 import { trafficDraftStorage, TrafficMapDraft } from '../../services/trafficDraftStorage';
 
@@ -90,6 +91,7 @@ export const TrafficEditorView: React.FC = () => {
   // Map visuals & overlay states
   const [showFloorplan, setShowFloorplan] = useState<boolean>(true);
   const [floorplanOpacity, setFloorplanOpacity] = useState<number>(0.3);
+  const [darkFloorplan, setDarkFloorplan] = useState<boolean>(true);
   const [showWalls, setShowWalls] = useState<boolean>(true);
   const [showLabels, setShowLabels] = useState<boolean>(true);
   const [snapToGrid, setSnapToGrid] = useState<boolean>(true);
@@ -1396,7 +1398,8 @@ export const TrafficEditorView: React.FC = () => {
       const originPos = toCanvasPos(0, 0);
       ctx.save();
       ctx.globalAlpha = floorplanOpacity;
-      ctx.drawImage(floorplanImg, originPos.x, originPos.y, floorplanImg.naturalWidth, floorplanImg.naturalHeight);
+      const planImage = darkFloorplan ? getDarkFloorplan(floorplanImg) : floorplanImg;
+      ctx.drawImage(planImage, originPos.x, originPos.y, floorplanImg.naturalWidth, floorplanImg.naturalHeight);
       ctx.restore();
     }
 
@@ -1619,6 +1622,7 @@ export const TrafficEditorView: React.FC = () => {
     zoom,
     offset,
     showFloorplan,
+    darkFloorplan,
     floorplanImg,
     currentLevel,
     floorplanOpacity,
@@ -2066,6 +2070,18 @@ export const TrafficEditorView: React.FC = () => {
             />
             <span>Blueprint</span>
           </label>
+
+          {showFloorplan && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={darkFloorplan}
+                onChange={(e) => setDarkFloorplan(e.target.checked)}
+                style={{ accentColor: 'var(--accent-cyan)' }}
+              />
+              <span>Dark</span>
+            </label>
+          )}
 
           {showFloorplan && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-secondary)' }}>

@@ -11,6 +11,27 @@ import {
   RobotState,
   WorkcellItem,
 } from '../types/rmf';
+import {
+  FleetConfigBody,
+  FleetConfigRecord,
+  NavGraphDetail,
+  NavGraphFile,
+  RobotBody,
+  RobotRecord,
+} from '../types/fmsApi';
+
+export function describeApiError(error: unknown): string {
+  const response = (error as { response?: { status?: number; data?: any } })?.response;
+  const data = response?.data;
+  if (data && typeof data === 'object') {
+    const details = Array.isArray(data.errors)
+      ? data.errors.map((item: any) => item?.detail).filter(Boolean)
+      : [];
+    const text = [data.message, ...details].filter(Boolean).join(' - ');
+    if (text) return `${response?.status ?? ''} ${text}`.trim();
+  }
+  return (error as Error)?.message || 'Unknown error';
+}
 
 const DEFAULT_API_URL =
   import.meta.env.VITE_RMF_API_SERVER_URL || 'https://rmf-api.qshudev.cloud';
@@ -734,6 +755,57 @@ export class RmfClient {
 
   public isConnected() {
     return this.connected;
+  }
+
+  public async listNavGraphs(): Promise<NavGraphFile[]> {
+    const res = await this.http.get<any>('/nav-graphs');
+    return res.data?.data ?? [];
+  }
+
+  public async getNavGraph(name: string): Promise<NavGraphDetail> {
+    const res = await this.http.get<any>(`/nav-graphs/${encodeURIComponent(name)}`);
+    return res.data?.data;
+  }
+
+  public async listFleetConfigs(): Promise<FleetConfigRecord[]> {
+    const res = await this.http.get<any>('/fleet-configs', { params: { page_index: 1, page_size: 100 } });
+    return res.data?.data ?? [];
+  }
+
+  public async createFleetConfig(name: string, body: FleetConfigBody): Promise<FleetConfigRecord> {
+    const res = await this.http.post<any>('/fleet-configs', { name, ...body });
+    return res.data?.data;
+  }
+
+  public async updateFleetConfig(name: string, body: FleetConfigBody): Promise<FleetConfigRecord> {
+    const res = await this.http.put<any>(`/fleet-configs/${encodeURIComponent(name)}`, body);
+    return res.data?.data;
+  }
+
+  public async deleteFleetConfig(name: string): Promise<void> {
+    await this.http.delete(`/fleet-configs/${encodeURIComponent(name)}`);
+  }
+
+  public async listRobots(): Promise<RobotRecord[]> {
+    const res = await this.http.get<any>('/robots', { params: { page_index: 1, page_size: 100 } });
+    return res.data?.data ?? [];
+  }
+
+  public async createRobot(fleetName: string, name: string, body: RobotBody): Promise<RobotRecord> {
+    const res = await this.http.post<any>('/robots', { fleet_name: fleetName, name, ...body });
+    return res.data?.data;
+  }
+
+  public async updateRobot(fleetName: string, name: string, body: RobotBody): Promise<RobotRecord> {
+    const res = await this.http.put<any>(
+      `/robots/${encodeURIComponent(fleetName)}/${encodeURIComponent(name)}`,
+      body,
+    );
+    return res.data?.data;
+  }
+
+  public async deleteRobot(fleetName: string, name: string): Promise<void> {
+    await this.http.delete(`/robots/${encodeURIComponent(fleetName)}/${encodeURIComponent(name)}`);
   }
 }
 

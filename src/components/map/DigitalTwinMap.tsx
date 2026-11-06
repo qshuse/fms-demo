@@ -7,6 +7,7 @@ import { ThreeDigitalTwin3D } from './ThreeDigitalTwin3D';
 import { MapLayerConfig } from '../../types/fms';
 import { RobotState } from '../../types/rmf';
 import { computeMapCoordinateSystem } from '../traffic-editor/trafficCoordinates';
+import { getDarkFloorplan } from './floorplanTheme';
 
 export const DigitalTwinMap: React.FC = () => {
   const {
@@ -77,6 +78,7 @@ export const DigitalTwinMap: React.FC = () => {
     showLifts: true,
     showLabels: true,
     showGrid: true,
+    darkFloorplan: true,
   });
 
   const toggleLayer = (layer: keyof MapLayerConfig) => {
@@ -309,7 +311,8 @@ export const DigitalTwinMap: React.FC = () => {
         const originPos = toCanvasPos(0, 0);
         ctx.save();
         ctx.globalAlpha = 0.9;
-        ctx.drawImage(floorplanImg, originPos.x, originPos.y, floorplanImg.naturalWidth, floorplanImg.naturalHeight);
+        const planImage = layers.darkFloorplan ? getDarkFloorplan(floorplanImg) : floorplanImg;
+        ctx.drawImage(planImage, originPos.x, originPos.y, floorplanImg.naturalWidth, floorplanImg.naturalHeight);
         ctx.restore();
       }
 
