@@ -189,6 +189,7 @@ export const FmsProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const validTabs: NavigationTab[] = [
       'overview',
       'map',
+      'setup',
       'traffic-editor',
       'fleets',
       'tasks',

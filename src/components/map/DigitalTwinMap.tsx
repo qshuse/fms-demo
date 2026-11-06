@@ -299,11 +299,10 @@ export const DigitalTwinMap: React.FC = () => {
 
     if (currentLevel) {
       const isCustomFloorplan = Boolean(
-        currentLevel.images?.[0]?.data?.startsWith('data:') ||
-        (currentLevel.images?.[0]?.name &&
+        currentLevel.images?.[0]?.name &&
           !currentLevel.images[0].name.toLowerCase().includes('office') &&
           !currentLevel.images[0].name.toLowerCase().includes('hotel') &&
-          !currentLevel.images[0].name.toLowerCase().includes('airport'))
+          !currentLevel.images[0].name.toLowerCase().includes('airport')
       );
 
       // 0. Draw Floorplan Blueprint Image (Underlay)

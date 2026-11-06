@@ -22,6 +22,8 @@ export const RobotModal: React.FC<Props> = ({ robot, fleets, defaultFleet, onClo
   const [chargers, setChargers] = useState<string[]>([]);
   const [error, setError] = useState<string>('');
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const [probe, setProbe] = useState<{ reachable: boolean; detail: string } | null>(null);
+  const [probing, setProbing] = useState<boolean>(false);
 
   const navGraph = fleets.find((item) => item.name === fleetName)?.config.nav_graph ?? '';
 
@@ -43,6 +45,18 @@ export const RobotModal: React.FC<Props> = ({ robot, fleets, defaultFleet, onClo
       cancelled = true;
     };
   }, [navGraph]);
+
+  const testConnection = async () => {
+    setProbe(null);
+    setProbing(true);
+    try {
+      setProbe(await rmfClient.testRobot({ base_url: baseUrl.trim(), secret }));
+    } catch (e) {
+      setProbe({ reachable: false, detail: describeApiError(e) });
+    } finally {
+      setProbing(false);
+    }
+  };
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -145,6 +159,20 @@ export const RobotModal: React.FC<Props> = ({ robot, fleets, defaultFleet, onClo
             />
             <span style={hintStyle}>Stored in the FMS database and sent to the adapter as plain text.</span>
           </label>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => void testConnection()}
+              disabled={probing || !baseUrl.trim()}
+            >
+              {probing ? 'Testing...' : 'Test connection'}
+            </button>
+            {probe && (
+              <span style={{ fontSize: '12px', color: probe.reachable ? '#6EE7B7' : '#FCA5A5' }}>{probe.detail}</span>
+            )}
+          </div>
 
           {error && <div style={errorBoxStyle}>{error}</div>}
 

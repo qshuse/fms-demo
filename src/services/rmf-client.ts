@@ -804,6 +804,11 @@ export class RmfClient {
     return res.data?.data;
   }
 
+  public async testRobot(robotApi: Record<string, unknown>): Promise<{ reachable: boolean; detail: string }> {
+    const res = await this.http.post<any>('/robots/test', { robot_api: robotApi });
+    return res.data?.data;
+  }
+
   public async deleteRobot(fleetName: string, name: string): Promise<void> {
     await this.http.delete(`/robots/${encodeURIComponent(fleetName)}/${encodeURIComponent(name)}`);
   }

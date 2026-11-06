@@ -14,7 +14,8 @@ import { NavGraph, BuildingMap, MapVertex, MapLane } from '../../types/rmf';
  * - [x, y, z, "name"] if no params
  * - [x, y, z, "name", { param_name: [type_id, value] }] if has params
  */
-function formatRmfVertex(v: MapVertex, idx: number): string {
+function formatRmfVertex(v: MapVertex, idx: number, flipY = false): string {
+  const y = flipY ? -v.y : v.y;
   const params: string[] = [];
   if (v.is_charger) params.push(`is_charger: [4, true]`);
   if (v.is_parking_spot) params.push(`is_parking_spot: [4, true]`);
@@ -23,9 +24,9 @@ function formatRmfVertex(v: MapVertex, idx: number): string {
 
   const nameStr = v.name ? JSON.stringify(v.name.replace(/^"|"$/g, '')) : `""`;
   if (params.length > 0) {
-    return `      - [${v.x.toFixed(4)}, ${v.y.toFixed(4)}, 0, ${nameStr}, {${params.join(', ')}}] # vertex ${idx}`;
+    return `      - [${v.x.toFixed(4)}, ${y.toFixed(4)}, 0, ${nameStr}, {${params.join(', ')}}] # vertex ${idx}`;
   }
-  return `      - [${v.x.toFixed(4)}, ${v.y.toFixed(4)}, 0, ${nameStr}] # vertex ${idx}`;
+  return `      - [${v.x.toFixed(4)}, ${y.toFixed(4)}, 0, ${nameStr}] # vertex ${idx}`;
 }
 
 /**
@@ -90,7 +91,7 @@ export function exportStandardBuildingYaml(
   } else {
     lines.push(`    vertices:`);
     currentGraph.vertices.forEach((v, idx) => {
-      lines.push(formatRmfVertex(v, idx));
+      lines.push(formatRmfVertex(v, idx, true));
     });
   }
 
@@ -318,6 +319,7 @@ export function parseNavGraphContent(content: string): Partial<NavGraph> | null 
     const vertices: MapVertex[] = [];
     const lanes: MapLane[] = [];
     const lines = content.split('\n');
+    const flipY = /^coordinate_system:\s*reference_image/m.test(content);
     let section: 'none' | 'vertices' | 'lanes' = 'none';
 
     for (const rawLine of lines) {
@@ -339,7 +341,7 @@ export function parseNavGraphContent(content: string): Partial<NavGraph> | null 
         const match = line.match(/- \[\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*("?.*?"?)(?:,\s*\{(.*?)\})?\s*\]/);
         if (match) {
           const x = parseFloat(match[1]);
-          const y = parseFloat(match[2]);
+          const y = flipY ? -parseFloat(match[2]) : parseFloat(match[2]);
           let name = match[4]?.trim() || '';
           if (name.startsWith('"') && name.endsWith('"')) name = name.slice(1, -1);
           const extra = match[5] || '';

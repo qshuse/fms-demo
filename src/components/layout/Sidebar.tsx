@@ -8,6 +8,7 @@ import {
   Building2,
   AlertTriangle,
   Sliders,
+  Wand2,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
@@ -32,6 +33,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggleCollapse })
       id: 'map',
       label: 'Digital Twin Map',
       icon: <Map size={20} />,
+    },
+    {
+      id: 'setup',
+      label: 'Setup Wizard',
+      icon: <Wand2 size={20} />,
     },
     {
       id: 'traffic-editor',

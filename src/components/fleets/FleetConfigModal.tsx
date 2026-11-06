@@ -25,6 +25,87 @@ const DEFAULT_RMF_FLEET = {
 
 const IDENTITY_REFERENCE = { rmf: [[0, 0], [10, 0]], robot: [[0, 0], [10, 0]] };
 
+type Reference = FleetConfigBody['reference_coordinates'];
+type RmfFleet = Record<string, any>;
+
+const TASK_CAPABILITIES = ['loop', 'delivery', 'patrol', 'clean'];
+const ACTIONS = ['jack_up', 'jack_down'];
+const FINISHING_REQUESTS = ['charge', 'park', 'nothing'];
+
+const sectionStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '10px',
+  padding: '12px',
+  borderRadius: '8px',
+  border: '1px solid var(--border-subtle)',
+};
+const gridStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' };
+const checkStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)' };
+
+const NumberField: React.FC<{ label: string; value: number; onChange: (value: number) => void; step?: number }> = ({
+  label,
+  value,
+  onChange,
+  step = 0.1,
+}) => (
+  <label style={labelStyle}>
+    {label}
+    <input
+      style={inputStyle}
+      type="number"
+      step={step}
+      value={Number.isFinite(value) ? value : 0}
+      onChange={(e) => onChange(Number(e.target.value))}
+    />
+  </label>
+);
+
+const CheckField: React.FC<{ label: string; checked: boolean; onChange: (checked: boolean) => void }> = ({
+  label,
+  checked,
+  onChange,
+}) => (
+  <label style={checkStyle}>
+    <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    {label}
+  </label>
+);
+
+const JsonField: React.FC<{ label: string; value: unknown; onChange: (value: any) => void }> = ({ label, value, onChange }) => {
+  const [text, setText] = useState<string>(JSON.stringify(value, null, 2));
+  const [invalid, setInvalid] = useState<boolean>(false);
+
+  useEffect(() => {
+    setText((current) => {
+      try {
+        return JSON.stringify(JSON.parse(current)) === JSON.stringify(value) ? current : JSON.stringify(value, null, 2);
+      } catch {
+        return JSON.stringify(value, null, 2);
+      }
+    });
+  }, [value]);
+
+  return (
+    <label style={labelStyle}>
+      {label}
+      <textarea
+        style={{ ...inputStyle, minHeight: '140px', fontFamily: 'monospace', fontSize: '12px', borderColor: invalid ? '#EF4444' : undefined }}
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          try {
+            onChange(JSON.parse(e.target.value));
+            setInvalid(false);
+          } catch {
+            setInvalid(true);
+          }
+        }}
+      />
+    </label>
+  );
+};
+
 interface LevelMap {
   map_id: string;
   map_name: string;
@@ -51,12 +132,9 @@ export const FleetConfigModal: React.FC<Props> = ({ fleet, onClose, onSaved }) =
       ]),
     );
   });
-  const [rmfFleetText, setRmfFleetText] = useState<string>(
-    JSON.stringify(fleet?.config.rmf_fleet ?? DEFAULT_RMF_FLEET, null, 2),
-  );
-  const [referenceText, setReferenceText] = useState<string>(
-    JSON.stringify(fleet?.config.reference_coordinates ?? {}, null, 2),
-  );
+  const [rmfFleet, setRmfFleet] = useState<RmfFleet>(fleet?.config.rmf_fleet ?? DEFAULT_RMF_FLEET);
+  const [reference, setReference] = useState<Reference>(fleet?.config.reference_coordinates ?? {});
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
   const [submitting, setSubmitting] = useState<boolean>(false);
 
@@ -85,18 +163,12 @@ export const FleetConfigModal: React.FC<Props> = ({ fleet, onClose, onSaved }) =
           });
           return next;
         });
-        setReferenceText((current) => {
-          let parsed: Record<string, unknown> = {};
-          try {
-            parsed = JSON.parse(current || '{}');
-          } catch {
-            return current;
-          }
-          const next: Record<string, unknown> = {};
+        setReference((current) => {
+          const next: Reference = {};
           graph.levels.forEach((level) => {
-            next[level] = parsed[level] ?? IDENTITY_REFERENCE;
+            next[level] = current[level] ?? IDENTITY_REFERENCE;
           });
-          return JSON.stringify(next, null, 2);
+          return next;
         });
       })
       .catch((e) => {
@@ -110,6 +182,50 @@ export const FleetConfigModal: React.FC<Props> = ({ fleet, onClose, onSaved }) =
     };
   }, [navGraph]);
 
+  const setField = (path: (string | number)[], value: unknown) => {
+    setRmfFleet((current) => {
+      const next = JSON.parse(JSON.stringify(current));
+      let target = next;
+      path.slice(0, -1).forEach((key, index) => {
+        if (target[key] === undefined || target[key] === null) target[key] = typeof path[index + 1] === 'number' ? [] : {};
+        target = target[key];
+      });
+      target[path[path.length - 1]] = value;
+      return next;
+    });
+  };
+
+  const toggleListItem = (key: string, item: string, checked: boolean) => {
+    const list: string[] = rmfFleet[key] ?? [];
+    setField([key], checked ? [...list, item] : list.filter((entry) => entry !== item));
+  };
+
+  const setPoint = (level: string, row: number, field: 'rmf' | 'robot', axis: number, value: number) => {
+    setReference((current) => {
+      const entry = current[level] ?? IDENTITY_REFERENCE;
+      const points = entry[field].map((point) => [...point]);
+      points[row][axis] = value;
+      return { ...current, [level]: { ...entry, [field]: points } };
+    });
+  };
+
+  const addPoint = (level: string) => {
+    setReference((current) => {
+      const entry = current[level] ?? IDENTITY_REFERENCE;
+      return { ...current, [level]: { rmf: [...entry.rmf, [0, 0]], robot: [...entry.robot, [0, 0]] } };
+    });
+  };
+
+  const removePoint = (level: string, row: number) => {
+    setReference((current) => {
+      const entry = current[level] ?? IDENTITY_REFERENCE;
+      return {
+        ...current,
+        [level]: { rmf: entry.rmf.filter((_, i) => i !== row), robot: entry.robot.filter((_, i) => i !== row) },
+      };
+    });
+  };
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError('');
@@ -121,14 +237,13 @@ export const FleetConfigModal: React.FC<Props> = ({ fleet, onClose, onSaved }) =
       setError('Pick a nav graph first.');
       return;
     }
-    let rmfFleet: Record<string, unknown>;
-    let reference: FleetConfigBody['reference_coordinates'];
-    try {
-      rmfFleet = JSON.parse(rmfFleetText);
-      reference = JSON.parse(referenceText);
-    } catch (e) {
-      setError(`Invalid JSON: ${(e as Error).message}`);
-      return;
+    for (const level of detail.levels) {
+      const points = reference[level]?.rmf ?? [];
+      const distinct = new Set(points.map((point) => point.join(','))).size;
+      if (points.length < 2 || distinct < 2) {
+        setError(`Level ${level}: reference_coordinates needs at least two different points.`);
+        return;
+      }
     }
     const maps: Record<string, Record<string, unknown>> = {};
     for (const level of detail.levels) {
@@ -242,27 +357,114 @@ export const FleetConfigModal: React.FC<Props> = ({ fleet, onClose, onSaved }) =
             </div>
           )}
 
-          <label style={labelStyle}>
-            reference_coordinates (JSON, RMF point to robot point per level)
-            <textarea
-              style={{ ...inputStyle, minHeight: '110px', fontFamily: 'monospace', fontSize: '12px' }}
-              value={referenceText}
-              onChange={(e) => setReferenceText(e.target.value)}
-            />
+          <div style={sectionStyle}>
+            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>Coordinate calibration</span>
             <span style={hintStyle}>
-              Needs at least two different points per level. Identity points are only right when the robot map and the RMF
-              map share the same origin.
+              Pairs of the same physical point in RMF meters and in the robot map. Use at least two different points that are far apart. Identity values are only right when both maps share the same origin.
             </span>
-          </label>
+            {(detail?.levels ?? Object.keys(reference)).map((level) => {
+              const entry = reference[level] ?? IDENTITY_REFERENCE;
+              return (
+                <div key={level} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '12px', color: 'var(--accent-cyan)' }}>{level}</span>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => addPoint(level)}>
+                      Add point
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setReference((current) => ({ ...current, [level]: IDENTITY_REFERENCE }))}
+                    >
+                      Identity
+                    </button>
+                  </div>
+                  {entry.rmf.map((rmfPoint, row) => (
+                    <div key={row} style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr) auto', gap: '6px', alignItems: 'end' }}>
+                      <NumberField label="RMF x" value={rmfPoint[0]} step={0.01} onChange={(v) => setPoint(level, row, 'rmf', 0, v)} />
+                      <NumberField label="RMF y" value={rmfPoint[1]} step={0.01} onChange={(v) => setPoint(level, row, 'rmf', 1, v)} />
+                      <NumberField label="Robot x" value={entry.robot[row][0]} step={0.01} onChange={(v) => setPoint(level, row, 'robot', 0, v)} />
+                      <NumberField label="Robot y" value={entry.robot[row][1]} step={0.01} onChange={(v) => setPoint(level, row, 'robot', 1, v)} />
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => removePoint(level, row)}>
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
 
-          <label style={labelStyle}>
-            rmf_fleet (JSON: speed limits, battery, task_capabilities...)
-            <textarea
-              style={{ ...inputStyle, minHeight: '180px', fontFamily: 'monospace', fontSize: '12px' }}
-              value={rmfFleetText}
-              onChange={(e) => setRmfFleetText(e.target.value)}
-            />
-          </label>
+          <div style={sectionStyle}>
+            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>Speed and size</span>
+            <div style={gridStyle}>
+              <NumberField label="Linear speed (m/s)" value={rmfFleet.limits?.linear?.[0]} onChange={(v) => setField(['limits', 'linear', 0], v)} />
+              <NumberField label="Linear accel (m/s2)" value={rmfFleet.limits?.linear?.[1]} onChange={(v) => setField(['limits', 'linear', 1], v)} />
+              <NumberField label="Angular speed (rad/s)" value={rmfFleet.limits?.angular?.[0]} onChange={(v) => setField(['limits', 'angular', 0], v)} />
+              <NumberField label="Angular accel (rad/s2)" value={rmfFleet.limits?.angular?.[1]} onChange={(v) => setField(['limits', 'angular', 1], v)} />
+              <NumberField label="Footprint radius (m)" value={rmfFleet.profile?.footprint} onChange={(v) => setField(['profile', 'footprint'], v)} />
+              <NumberField label="Vicinity radius (m)" value={rmfFleet.profile?.vicinity} onChange={(v) => setField(['profile', 'vicinity'], v)} />
+            </div>
+            <CheckField label="Robot can drive in reverse" checked={Boolean(rmfFleet.reversible)} onChange={(v) => setField(['reversible'], v)} />
+          </div>
+
+          <div style={sectionStyle}>
+            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>Battery and power</span>
+            <div style={gridStyle}>
+              <NumberField label="Voltage (V)" value={rmfFleet.battery_system?.voltage} step={1} onChange={(v) => setField(['battery_system', 'voltage'], v)} />
+              <NumberField label="Capacity (Ah)" value={rmfFleet.battery_system?.capacity} step={1} onChange={(v) => setField(['battery_system', 'capacity'], v)} />
+              <NumberField label="Charging current (A)" value={rmfFleet.battery_system?.charging_current} step={1} onChange={(v) => setField(['battery_system', 'charging_current'], v)} />
+              <NumberField label="Mass (kg)" value={rmfFleet.mechanical_system?.mass} step={1} onChange={(v) => setField(['mechanical_system', 'mass'], v)} />
+              <NumberField label="Moment of inertia" value={rmfFleet.mechanical_system?.moment_of_inertia} step={1} onChange={(v) => setField(['mechanical_system', 'moment_of_inertia'], v)} />
+              <NumberField label="Friction coefficient" value={rmfFleet.mechanical_system?.friction_coefficient} step={0.01} onChange={(v) => setField(['mechanical_system', 'friction_coefficient'], v)} />
+              <NumberField label="Ambient power (W)" value={rmfFleet.ambient_system?.power} step={1} onChange={(v) => setField(['ambient_system', 'power'], v)} />
+              <NumberField label="Tool power (W)" value={rmfFleet.tool_system?.power} step={1} onChange={(v) => setField(['tool_system', 'power'], v)} />
+              <NumberField label="Recharge below (0-1)" value={rmfFleet.recharge_threshold} step={0.01} onChange={(v) => setField(['recharge_threshold'], v)} />
+              <NumberField label="Charge up to (0-1)" value={rmfFleet.recharge_soc} step={0.01} onChange={(v) => setField(['recharge_soc'], v)} />
+            </div>
+            <CheckField label="Account for battery drain when planning" checked={Boolean(rmfFleet.account_for_battery_drain)} onChange={(v) => setField(['account_for_battery_drain'], v)} />
+          </div>
+
+          <div style={sectionStyle}>
+            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>Tasks and behavior</span>
+            <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+              {TASK_CAPABILITIES.map((name) => (
+                <CheckField key={name} label={name} checked={Boolean(rmfFleet.task_capabilities?.[name])} onChange={(v) => setField(['task_capabilities', name], v)} />
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+              {ACTIONS.map((name) => (
+                <CheckField key={name} label={`action ${name}`} checked={(rmfFleet.actions ?? []).includes(name)} onChange={(v) => toggleListItem('actions', name, v)} />
+              ))}
+            </div>
+            <div style={gridStyle}>
+              <label style={labelStyle}>
+                When a task ends
+                <select style={inputStyle} value={rmfFleet.finishing_request ?? 'nothing'} onChange={(e) => setField(['finishing_request'], e.target.value)}>
+                  {FINISHING_REQUESTS.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <NumberField label="Fleet state rate (Hz)" value={rmfFleet.publish_fleet_state} step={1} onChange={(v) => setField(['publish_fleet_state'], v)} />
+              <NumberField label="Robot update rate (Hz)" value={rmfFleet.robot_state_update_frequency} step={1} onChange={(v) => setField(['robot_state_update_frequency'], v)} />
+            </div>
+            <CheckField label="Responsive wait" checked={Boolean(rmfFleet.responsive_wait)} onChange={(v) => setField(['responsive_wait'], v)} />
+          </div>
+
+          <div>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowAdvanced((current) => !current)}>
+              {showAdvanced ? 'Hide advanced (JSON)' : 'Advanced (JSON)'}
+            </button>
+          </div>
+          {showAdvanced && (
+            <>
+              <JsonField label="rmf_fleet" value={rmfFleet} onChange={setRmfFleet} />
+              <JsonField label="reference_coordinates" value={reference} onChange={setReference} />
+            </>
+          )}
 
           {error && <div style={errorBoxStyle}>{error}</div>}
 

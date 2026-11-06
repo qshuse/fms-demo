@@ -7,6 +7,7 @@ import { EStopModal } from './components/layout/EStopModal';
 import { DashboardView } from './components/dashboard/DashboardView';
 import { DigitalTwinMap } from './components/map/DigitalTwinMap';
 import { TrafficEditorView } from './components/traffic-editor/TrafficEditorView';
+import { SetupWizard } from './components/setup/SetupWizard';
 import { FleetsView } from './components/fleets/FleetsView';
 import { TasksView } from './components/tasks/TasksView';
 import { InfrastructureView } from './components/infrastructure/InfrastructureView';
@@ -55,6 +56,14 @@ const MainLayout: React.FC = () => {
             element={
               <div style={{ flex: 1, height: '100%', position: 'relative', overflow: 'hidden' }}>
                 <DigitalTwinMap />
+              </div>
+            }
+          />
+          <Route
+            path="/setup"
+            element={
+              <div className="page-body">
+                <SetupWizard />
               </div>
             }
           />
